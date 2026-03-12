@@ -1,7 +1,7 @@
 # Vuls Exporter - Claude Code Context
 
 ## Project Overview
-Sidecar service that reads Vuls scan results and pushes them to the Obmondo API with client certificate authentication. Runs alongside the Vuls server in Kubernetes.
+Sidecar service that reads Vuls scan results and pushes them to the Obmondo API with client certificate authentication. Runs alongside the Vuls server in Kubernetes. Uses Linux inotify (`IN_CLOSE_WRITE`) via `golang.org/x/sys/unix` to detect new result files immediately, with a periodic ticker as fallback.
 
 ## Build & Test
 ```sh

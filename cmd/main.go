@@ -12,6 +12,7 @@ import (
 
 	"github.com/Obmondo/vuls-exporter/config"
 	"github.com/Obmondo/vuls-exporter/internal/exporter"
+	"github.com/Obmondo/vuls-exporter/internal/watcher"
 )
 
 var (
@@ -58,15 +59,24 @@ func run(_ *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("starting vuls-exporter", "interval", cfg.Interval.Duration, "version", Version)
+	w, err := watcher.New(cfg.ResultsDir)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
 
-	// Run immediately on startup, then on interval.
+	slog.Info("starting vuls-exporter", "interval", cfg.Interval.Duration, "results_dir", cfg.ResultsDir, "version", Version)
+
+	// Run immediately on startup, then on interval + inotify.
 	push(exp)
 	ticker := time.NewTicker(cfg.Interval.Duration)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case file := <-w.Events():
+			slog.Info("detected new result file", "file", file)
+			pushFile(exp, file)
 		case <-ticker.C:
 			push(exp)
 		case <-ctx.Done():
@@ -81,4 +91,12 @@ func push(exp *exporter.Exporter) {
 	if err := exp.Push(); err != nil {
 		slog.Error("push failed", "error", err)
 	}
+}
+
+func pushFile(exp *exporter.Exporter, path string) {
+	if err := exp.PushFile(path); err != nil {
+		slog.Error("push failed", "file", path, "error", err)
+		return
+	}
+	slog.Info("pushed result", "file", path)
 }

@@ -16,12 +16,17 @@ Linux hosts                          Kubernetes cluster
 - [security-exporter](https://github.com/Obmondo/security-exporter) runs on Linux hosts, collects installed packages, and sends them to the Vuls server
 - **vuls-exporter** (this repo) runs as a sidecar in k8s, reads scan results from the Vuls server, and pushes them to the Obmondo API with mTLS client certificate authentication
 
+## How it works
+
+The exporter watches the shared results directory (`results_dir`) using Linux inotify (`IN_CLOSE_WRITE`). When vuls-server finishes writing a JSON result file and closes the file descriptor, the exporter detects it immediately and pushes it to the Obmondo API. A periodic ticker (`interval`) also runs as a fallback to push any files that may have been missed.
+
 ## Configuration
 
 ```yaml
+results_dir: "/vuls/results"
+interval: 12h
 obmondo:
   url: "https://api.obmondo.com/v1/vuls"
-  interval: 12h
   cert_file: "/etc/ssl/client.pem"
   key_file: "/etc/ssl/client-key.pem"
   ca_file: "/etc/ssl/ca.pem"

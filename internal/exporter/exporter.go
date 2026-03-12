@@ -56,7 +56,7 @@ func (e *Exporter) Push() error {
 
 	var pushErr error
 	for _, file := range files {
-		if err := e.pushFile(file); err != nil {
+		if err := e.PushFile(file); err != nil {
 			slog.Error("failed to push result", "file", file, "error", err)
 			pushErr = err
 
@@ -68,7 +68,8 @@ func (e *Exporter) Push() error {
 	return pushErr
 }
 
-func (e *Exporter) pushFile(path string) error {
+// PushFile sends a single result file to the API.
+func (e *Exporter) PushFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
