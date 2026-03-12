@@ -59,7 +59,7 @@ func run(_ *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	w, err := watcher.New(cfg.ResultsDir)
+	w, err := watcher.New(ctx, cfg.ResultsDir)
 	if err != nil {
 		return err
 	}

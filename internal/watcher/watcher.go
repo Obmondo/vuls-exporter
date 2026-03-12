@@ -2,11 +2,14 @@ package watcher
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -24,7 +27,21 @@ type Watcher struct {
 }
 
 // New creates a Watcher on the given directory. Only *.json files are reported.
-func New(dir string) (*Watcher, error) {
+// If the directory does not exist yet, New polls until it appears (the volume
+// may be mounted read-only, so the exporter cannot create it itself).
+func New(ctx context.Context, dir string) (*Watcher, error) {
+	for {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		}
+		slog.Info("waiting for results directory to appear", "dir", dir)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
 	if err != nil {
 		return nil, fmt.Errorf("inotify_init1: %w", err)
