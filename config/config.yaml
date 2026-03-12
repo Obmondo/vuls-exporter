@@ -1,0 +1,6 @@
+results_dir: "/vuls/results"
+interval: 12h
+obmondo:
+  cert_file: "/etc/ssl/client.pem"
+  key_file: "/etc/ssl/client-key.pem"
+  ca_file: "/etc/ssl/ca.pem"
