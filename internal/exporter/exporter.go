@@ -3,18 +3,22 @@ package exporter
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Obmondo/vuls-exporter/config"
 )
 
-const httpTimeout = 30 * time.Second
+const (
+	maxErrorBodySize = 4096
+)
 
 // Exporter reads Vuls JSON result files and pushes them to the Obmondo API.
 type Exporter struct {
@@ -25,7 +29,10 @@ type Exporter struct {
 
 // New creates an Exporter with mTLS client if cert files are configured.
 func New(cfg *config.Config) (*Exporter, error) {
-	client := &http.Client{Timeout: httpTimeout}
+	client := &http.Client{Timeout: cfg.Obmondo.Timeout.Duration}
+	if client.Timeout == 0 {
+		client.Timeout = 30 * time.Second
+	}
 
 	if cfg.Obmondo.CertFile != "" && cfg.Obmondo.KeyFile != "" {
 		tlsCfg, err := buildTLSConfig(cfg.Obmondo)
@@ -42,9 +49,10 @@ func New(cfg *config.Config) (*Exporter, error) {
 	}, nil
 }
 
-// Push reads all JSON result files from the results directory and POSTs each to the API.
+// Push reads JSON result files from today's scan directories and POSTs each to the API.
+// Files that have already been pushed (same path+mtime) are skipped.
 func (e *Exporter) Push() error {
-	files, err := filepath.Glob(filepath.Join(e.resultsDir, "**", "*.json"))
+	files, err := e.collectFiles()
 	if err != nil {
 		return fmt.Errorf("listing result files: %w", err)
 	}
@@ -54,18 +62,35 @@ func (e *Exporter) Push() error {
 		return nil
 	}
 
-	var pushErr error
+	var errs []error
 	for _, file := range files {
 		if err := e.PushFile(file); err != nil {
 			slog.Error("failed to push result", "file", file, "error", err)
-			pushErr = err
+			errs = append(errs, err)
 
 			continue
 		}
 		slog.Info("pushed result", "file", file)
 	}
 
-	return pushErr
+	return errors.Join(errs...)
+}
+
+// collectFiles walks the results directory tree and returns all *.json files.
+func (e *Exporter) collectFiles() ([]string, error) {
+	var files []string
+
+	err := filepath.WalkDir(e.resultsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".json") {
+			files = append(files, path)
+		}
+		return nil
+	})
+
+	return files, err
 }
 
 // PushFile sends a single result file to the API.
@@ -89,7 +114,7 @@ func (e *Exporter) PushFile(path string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		return fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
 	}
 
