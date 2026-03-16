@@ -1,26 +1,20 @@
 package watcher
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"unsafe"
 
-	"golang.org/x/sys/unix"
+	"github.com/fsnotify/fsnotify"
 )
 
-// Watcher uses raw inotify to monitor a directory for IN_CLOSE_WRITE events,
-// which fire only after the writing process closes its file descriptor —
-// guaranteeing the file is fully written.
+// Watcher monitors a directory tree for new *.json files using fsnotify.
+// It reports fully-written file paths on the Events channel.
 type Watcher struct {
-	fd     int
-	wd     int
+	w      *fsnotify.Watcher
 	dir    string
 	events chan string
 	done   chan struct{}
@@ -28,7 +22,7 @@ type Watcher struct {
 
 // New creates a Watcher on the given directory. Only *.json files are reported.
 // If the directory does not exist yet, New polls until it appears (the volume
-// may be mounted read-only, so the exporter cannot create it itself).
+// may be mounted after the container starts in k8s).
 func New(ctx context.Context, dir string) (*Watcher, error) {
 	for {
 		if _, err := os.Stat(dir); err == nil {
@@ -42,20 +36,19 @@ func New(ctx context.Context, dir string) (*Watcher, error) {
 		}
 	}
 
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	fw, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, fmt.Errorf("inotify_init1: %w", err)
+		return nil, err
 	}
 
-	wd, err := unix.InotifyAddWatch(fd, dir, unix.IN_CLOSE_WRITE)
-	if err != nil {
-		unix.Close(fd)
-		return nil, fmt.Errorf("inotify_add_watch %s: %w", dir, err)
+	// Walk the directory tree and watch all subdirectories.
+	if err := addRecursive(fw, dir); err != nil {
+		fw.Close()
+		return nil, err
 	}
 
 	w := &Watcher{
-		fd:     fd,
-		wd:     wd,
+		w:      fw,
 		dir:    dir,
 		events: make(chan string, 16),
 		done:   make(chan struct{}),
@@ -73,9 +66,8 @@ func (w *Watcher) Events() <-chan string {
 
 // Close stops the watcher and releases resources.
 func (w *Watcher) Close() error {
-	unix.InotifyRmWatch(w.fd, uint32(w.wd))
-	err := unix.Close(w.fd)
-	<-w.done // wait for readLoop to exit
+	err := w.w.Close()
+	<-w.done
 	return err
 }
 
@@ -83,46 +75,48 @@ func (w *Watcher) readLoop() {
 	defer close(w.done)
 	defer close(w.events)
 
-	buf := make([]byte, 4096)
 	for {
-		n, err := unix.Read(w.fd, buf)
-		if err != nil {
-			// fd closed by Close() — normal shutdown
-			return
+		select {
+		case event, ok := <-w.w.Events:
+			if !ok {
+				return
+			}
+			w.handleEvent(event)
+		case err, ok := <-w.w.Errors:
+			if !ok {
+				return
+			}
+			slog.Error("watcher error", "error", err)
 		}
-
-		w.parseEvents(buf[:n])
 	}
 }
 
-func (w *Watcher) parseEvents(buf []byte) {
-	for len(buf) > 0 {
-		if len(buf) < unix.SizeofInotifyEvent {
-			return
+func (w *Watcher) handleEvent(event fsnotify.Event) {
+	// Watch new subdirectories as they're created.
+	if event.Has(fsnotify.Create) {
+		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+			slog.Debug("watching new subdirectory", "dir", event.Name)
+			_ = addRecursive(w.w, event.Name)
 		}
-
-		var raw unix.InotifyEvent
-		binary.Read(bytes.NewReader(buf), binary.LittleEndian, &raw)
-
-		nameLen := int(raw.Len)
-		headerLen := int(unsafe.Sizeof(raw))
-
-		if len(buf) < headerLen+nameLen {
-			return
-		}
-
-		if nameLen > 0 {
-			nameBytes := buf[headerLen : headerLen+nameLen]
-			// Name is null-terminated
-			name := string(bytes.TrimRight(nameBytes, "\x00"))
-
-			if strings.HasSuffix(name, ".json") {
-				path := filepath.Join(w.dir, name)
-				slog.Debug("inotify IN_CLOSE_WRITE", "file", path)
-				w.events <- path
-			}
-		}
-
-		buf = buf[headerLen+nameLen:]
 	}
+
+	// Only report *.json Write events (file fully written).
+	if event.Has(fsnotify.Write) && strings.HasSuffix(event.Name, ".json") {
+		slog.Debug("detected new result", "file", event.Name)
+		w.events <- event.Name
+	}
+}
+
+// addRecursive walks dir and adds all directories to the watcher.
+func addRecursive(fw *fsnotify.Watcher, dir string) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			slog.Debug("watching directory", "dir", path)
+			return fw.Add(path)
+		}
+		return nil
+	})
 }
