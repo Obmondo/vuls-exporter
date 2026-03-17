@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	maxErrorBodySize = 4096
+	maxErrorBodySize   = 4096
+	defaultHTTPTimeout = 30 * time.Second
 )
 
 // Exporter reads Vuls JSON result files and pushes them to the Obmondo API.
@@ -31,7 +32,7 @@ type Exporter struct {
 func New(cfg *config.Config) (*Exporter, error) {
 	client := &http.Client{Timeout: cfg.Obmondo.Timeout.Duration}
 	if client.Timeout == 0 {
-		client.Timeout = 30 * time.Second
+		client.Timeout = defaultHTTPTimeout
 	}
 
 	if cfg.Obmondo.CertFile != "" && cfg.Obmondo.KeyFile != "" {

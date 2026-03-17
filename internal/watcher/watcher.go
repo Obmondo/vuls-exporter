@@ -11,6 +11,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+const (
+	dirPollInterval = 5 * time.Second
+	eventChanSize   = 16
+)
+
 // Watcher monitors a directory tree for new *.json files using fsnotify.
 // It reports fully-written file paths on the Events channel.
 type Watcher struct {
@@ -32,7 +37,7 @@ func New(ctx context.Context, dir string) (*Watcher, error) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(dirPollInterval):
 		}
 	}
 
@@ -43,14 +48,14 @@ func New(ctx context.Context, dir string) (*Watcher, error) {
 
 	// Walk the directory tree and watch all subdirectories.
 	if err := addRecursive(fw, dir); err != nil {
-		fw.Close()
+		_ = fw.Close()
 		return nil, err
 	}
 
 	w := &Watcher{
 		w:      fw,
 		dir:    dir,
-		events: make(chan string, 16),
+		events: make(chan string, eventChanSize),
 		done:   make(chan struct{}),
 	}
 
