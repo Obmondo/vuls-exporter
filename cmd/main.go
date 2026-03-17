@@ -63,7 +63,11 @@ func run(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			slog.Error("watcher close failed", "error", err)
+		}
+	}()
 
 	slog.Info("starting vuls-exporter", "interval", cfg.Interval.Duration, "results_dir", cfg.ResultsDir, "version", Version)
 

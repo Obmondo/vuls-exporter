@@ -16,10 +16,11 @@ type Config struct {
 }
 
 type Obmondo struct {
-	URL      string `yaml:"url"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-	CAFile   string `yaml:"ca_file"`
+	URL      string   `yaml:"url"`
+	Timeout  Duration `yaml:"timeout"`
+	CertFile string   `yaml:"cert_file"`
+	KeyFile  string   `yaml:"key_file"`
+	CAFile   string   `yaml:"ca_file"`
 }
 
 // Duration wraps time.Duration for YAML unmarshaling.
