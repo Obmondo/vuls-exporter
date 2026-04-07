@@ -19,6 +19,7 @@ import (
 const (
 	maxErrorBodySize   = 4096
 	defaultHTTPTimeout = 30 * time.Second
+	cveReportPath      = "/api/servers/cve-report"
 )
 
 // Exporter reads Vuls JSON result files and pushes them to the Obmondo API.
@@ -45,7 +46,7 @@ func New(cfg *config.Config) (*Exporter, error) {
 
 	return &Exporter{
 		resultsDir: cfg.ResultsDir,
-		apiURL:     cfg.Obmondo.URL,
+		apiURL:     strings.TrimRight(cfg.Obmondo.URL, "/") + cveReportPath,
 		client:     client,
 	}, nil
 }
