@@ -26,7 +26,7 @@ The exporter watches the shared results directory (`results_dir`) using Linux in
 results_dir: "/vuls/results"
 interval: 12h
 obmondo:
-  url: "https://api.obmondo.com/v1/vuls"
+  url: "https://api.obmondo.com"
   cert_file: "/etc/ssl/client.pem"
   key_file: "/etc/ssl/client-key.pem"
   ca_file: "/etc/ssl/ca.pem"
