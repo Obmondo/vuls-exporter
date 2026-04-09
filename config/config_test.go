@@ -14,7 +14,7 @@ func TestLoad(t *testing.T) {
 results_dir: "/vuls/results"
 interval: 12h
 obmondo:
-  url: "https://api.obmondo.com/v1/vuls"
+  url: "https://api.obmondo.com"
   cert_file: "/etc/ssl/cert.pem"
   key_file: "/etc/ssl/key.pem"
   ca_file: "/etc/ssl/ca.pem"
@@ -32,8 +32,8 @@ obmondo:
 	if cfg.Interval.Duration != 12*time.Hour {
 		t.Errorf("expected interval 12h, got %s", cfg.Interval.Duration)
 	}
-	if cfg.Obmondo.URL != "https://api.obmondo.com/v1/vuls" {
-		t.Errorf("expected URL https://api.obmondo.com/v1/vuls, got %s", cfg.Obmondo.URL)
+	if cfg.Obmondo.URL != "https://api.obmondo.com" {
+		t.Errorf("expected URL https://api.obmondo.com, got %s", cfg.Obmondo.URL)
 	}
 	if cfg.Obmondo.CertFile != "/etc/ssl/cert.pem" {
 		t.Errorf("expected cert_file /etc/ssl/cert.pem, got %s", cfg.Obmondo.CertFile)

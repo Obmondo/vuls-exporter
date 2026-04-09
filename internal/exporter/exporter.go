@@ -45,7 +45,7 @@ func New(cfg *config.Config) (*Exporter, error) {
 
 	return &Exporter{
 		resultsDir: cfg.ResultsDir,
-		apiURL:     cfg.Obmondo.URL,
+		apiURL:     strings.TrimRight(cfg.Obmondo.URL, "/") + "/api/servers/cve-report",
 		client:     client,
 	}, nil
 }
