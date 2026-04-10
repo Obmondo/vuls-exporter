@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestWatcher_DetectsNewJSONFile(t *testing.T) {
@@ -74,7 +76,7 @@ func TestWatcher_DetectsFileInSubdirectory(t *testing.T) {
 	defer w.Close()
 
 	// Create a subdirectory (simulates Vuls time-stamped dir).
-	subdir := filepath.Join(dir, "2026-03-16T05-00-00+0000")
+	subdir := filepath.Join(dir, time.Now().Format(dirTimeLayout))
 	if err := os.MkdirAll(subdir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +97,73 @@ func TestWatcher_DetectsFileInSubdirectory(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for subdirectory watcher event")
+	}
+}
+
+func TestCleanOldDirs(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Now()
+	oldDir := now.Add(-31 * 24 * time.Hour).Format(dirTimeLayout)
+	recentDir := now.Add(-1 * 24 * time.Hour).Format(dirTimeLayout)
+	nonTimestamp := "some-random-dir"
+
+	for _, name := range []string{oldDir, recentDir, nonTimestamp} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleanOldDirs(dir)
+
+	if _, err := os.Stat(filepath.Join(dir, oldDir)); !os.IsNotExist(err) {
+		t.Errorf("expected old dir %s to be removed", oldDir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, recentDir)); err != nil {
+		t.Errorf("expected recent dir %s to be kept: %v", recentDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, nonTimestamp)); err != nil {
+		t.Errorf("expected non-timestamp dir %s to be kept: %v", nonTimestamp, err)
+	}
+}
+
+func TestAddRecursive_SkipsOldDirs(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Now()
+	oldDir := now.Add(-3 * 24 * time.Hour).Format(dirTimeLayout)
+	recentDir := now.Add(-1 * 24 * time.Hour).Format(dirTimeLayout)
+
+	for _, name := range []string{oldDir, recentDir} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fw, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fw.Close()
+
+	if err := addRecursive(fw, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	watched := fw.WatchList()
+	watchSet := make(map[string]bool, len(watched))
+	for _, p := range watched {
+		watchSet[p] = true
+	}
+
+	if !watchSet[dir] {
+		t.Error("expected root dir to be watched")
+	}
+	if !watchSet[filepath.Join(dir, recentDir)] {
+		t.Errorf("expected recent dir %s to be watched", recentDir)
+	}
+	if watchSet[filepath.Join(dir, oldDir)] {
+		t.Errorf("expected old dir %s to NOT be watched", oldDir)
 	}
 }
 
