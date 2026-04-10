@@ -46,6 +46,9 @@ func New(ctx context.Context, dir string) (*Watcher, error) {
 		return nil, err
 	}
 
+	// Remove result directories older than 30 days.
+	cleanOldDirs(dir)
+
 	// Walk the directory tree and watch all subdirectories.
 	if err := addRecursive(fw, dir); err != nil {
 		_ = fw.Close()
@@ -112,16 +115,59 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	}
 }
 
-// addRecursive walks dir and adds all directories to the watcher.
+const (
+	dirTimeLayout = "2006-01-02T15-04-05-0700"
+	cleanupMaxAge = 30 * 24 * time.Hour
+)
+
+// cleanOldDirs removes top-level subdirectories of dir whose name parses to
+// a timestamp older than 30 days.
+func cleanOldDirs(dir string) {
+	cutoff := time.Now().Add(-cleanupMaxAge)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		slog.Error("failed to read results directory for cleanup", "dir", dir, "error", err)
+		return
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		t, parseErr := time.Parse(dirTimeLayout, e.Name())
+		if parseErr != nil {
+			continue
+		}
+		if t.Before(cutoff) {
+			path := filepath.Join(dir, e.Name())
+			slog.Info("removing old result directory", "dir", path, "time", t)
+			if err := os.RemoveAll(path); err != nil {
+				slog.Error("failed to remove old directory", "dir", path, "error", err)
+			}
+		}
+	}
+}
+
+// addRecursive walks dir and watches only directories from the last 2 days
+// based on the timestamp encoded in the directory name.
 func addRecursive(fw *fsnotify.Watcher, dir string) error {
+	cutoff := time.Now().Add(-2 * 24 * time.Hour)
+
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			slog.Debug("watching directory", "dir", path)
-			return fw.Add(path)
+		if !d.IsDir() {
+			return nil
 		}
-		return nil
+
+		if t, parseErr := time.Parse(dirTimeLayout, d.Name()); parseErr == nil && t.Before(cutoff) {
+			slog.Debug("skipping old directory", "dir", path, "time", t)
+			return filepath.SkipDir
+		}
+
+		slog.Debug("watching directory", "dir", path)
+		return fw.Add(path)
 	})
 }
