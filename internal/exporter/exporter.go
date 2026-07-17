@@ -168,12 +168,72 @@ func trimResultFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("decoding %s: %w", path, err)
 	}
 
+	filterByDistro(&result)
+
 	body, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling trimmed result for %s: %w", path, err)
 	}
 
 	return body, nil
+}
+
+// distroSources returns the CVE content sources that count as the host distro's
+// own advisory for a Vuls family (security-API feed, then OVAL feed). Substring
+// matching tolerates Vuls's dotted family names. Returns nil for unknown
+// families, which disables distro filtering.
+func distroSources(family string) []string {
+	f := strings.ToLower(family)
+	switch {
+	case strings.Contains(f, "ubuntu"):
+		return []string{"ubuntu_api", "ubuntu"}
+	case strings.Contains(f, "debian"):
+		return []string{"debian_security_tracker", "debian"}
+	case strings.Contains(f, "redhat"), strings.Contains(f, "centos"),
+		strings.Contains(f, "rocky"), strings.Contains(f, "alma"),
+		strings.Contains(f, "oracle"), strings.Contains(f, "fedora"),
+		strings.Contains(f, "amazon"):
+		return []string{"redhat_api", "redhat"}
+	case strings.Contains(f, "suse"):
+		return []string{"suse"}
+	}
+	return nil
+}
+
+// filterByDistro drops CVEs the host distro's own advisory never flagged (Vuls
+// cross-references other vendors for the same CVE ID) and prunes each surviving
+// CVE's content to the distro's own sources plus nvd — nvd is kept because it
+// carries the CVSS score when the distro feed publishes only a severity. Hosts
+// with an unknown family are left untouched.
+func filterByDistro(r *slimResult) {
+	sources := distroSources(r.Family)
+	if sources == nil {
+		return
+	}
+
+	allowed := map[string]bool{"nvd": true}
+	for _, s := range sources {
+		allowed[s] = true
+	}
+
+	for id, cve := range r.ScannedCves {
+		fromDistro := false
+		for _, s := range sources {
+			if len(cve.CveContents[s]) > 0 {
+				fromDistro = true
+				break
+			}
+		}
+		if !fromDistro {
+			delete(r.ScannedCves, id)
+			continue
+		}
+		for src := range cve.CveContents {
+			if !allowed[src] {
+				delete(cve.CveContents, src)
+			}
+		}
+	}
 }
 
 func buildTLSConfig(obmondo config.Obmondo) (*tls.Config, error) {

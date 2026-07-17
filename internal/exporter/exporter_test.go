@@ -83,7 +83,14 @@ func TestPush_TrimsPayload(t *testing.T) {
 				],
 				"cveContents": {
 					"ubuntu_api": [{"cvss3Score": 0, "cvss3Severity": "low", "summary": "s", "references": [{"link": "x"}], "cpes": ["a"]}],
+					"redhat_api": [{"cvss3Score": 6.1, "cvss3Severity": "Moderate"}],
 					"nvd": [{"cvss3Score": 7.8, "cvss3Severity": "HIGH", "cvss2Score": 6.9, "cwes": ["CWE-1"]}]
+				}
+			},
+			"CVE-2099-9999": {
+				"affectedPackages": [{"name": "util-linux", "notFixedYet": true}],
+				"cveContents": {
+					"redhat_api": [{"cvss3Score": 8.8, "cvss3Severity": "Important"}]
 				}
 			}
 		}
@@ -105,16 +112,23 @@ func TestPush_TrimsPayload(t *testing.T) {
 	}
 
 	// Bulky and redundant fields must be gone. cveID is dropped because it is
-	// already the scannedCves map key.
-	for _, gone := range []string{"references", "cpes", "cwes", "cvss2Score", "\"packages\"", "confidences", "drop me", "cveID"} {
+	// already the scannedCves map key; redhat_api because it is not ubuntu's own
+	// advisory; CVE-2099-9999 because ubuntu never flagged it.
+	for _, gone := range []string{"references", "cpes", "cwes", "cvss2Score", "\"packages\"", "confidences", "drop me", "cveID", "redhat_api", "CVE-2099-9999"} {
 		if strings.Contains(received, gone) {
 			t.Errorf("trimmed payload still contains %q: %s", gone, received)
 		}
 	}
 
-	// The CVE is still addressable by its map key.
+	// The relevant CVE is still addressable by its map key, with its own feed and
+	// nvd preserved.
 	if !strings.Contains(received, "CVE-2016-2568") {
 		t.Errorf("trimmed payload lost the CVE map key: %s", received)
+	}
+	for _, want := range []string{"ubuntu_api", "nvd"} {
+		if !strings.Contains(received, want) {
+			t.Errorf("trimmed payload dropped needed source %q: %s", want, received)
+		}
 	}
 
 	// Required fields must survive and round-trip to the API's shape.
