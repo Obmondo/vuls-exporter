@@ -1,8 +1,10 @@
 package exporter
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,35 @@ type Exporter struct {
 	resultsDir string
 	apiURL     string
 	client     *http.Client
+}
+
+// slimResult is the subset of a Vuls scan result the Obmondo API actually
+// consumes. A full Vuls result JSON also carries references, CPEs, CWEs, CVSS2
+// data, exploits, mitigations and the host's package inventory — megabytes the
+// API ignores. Decoding into this struct drops all of it (unknown JSON fields
+// are skipped), so we push a fraction of the original payload.
+type slimResult struct {
+	ServerName  string             `json:"serverName"`
+	Family      string             `json:"family,omitempty"`
+	ScannedCves map[string]slimCVE `json:"scannedCves,omitempty"`
+}
+
+type slimCVE struct {
+	// The CVE ID is the map key in scannedCves, so it is not repeated here.
+	AffectedPackages []slimAffectedPackage       `json:"affectedPackages,omitempty"`
+	CveContents      map[string][]slimCveContent `json:"cveContents,omitempty"`
+}
+
+type slimAffectedPackage struct {
+	Name        string `json:"name"`
+	NotFixedYet bool   `json:"notFixedYet,omitempty"`
+	FixState    string `json:"fixState,omitempty"`
+}
+
+type slimCveContent struct {
+	Cvss3Score    float64 `json:"cvss3Score,omitempty"`
+	Cvss3Severity string  `json:"cvss3Severity,omitempty"`
+	Summary       string  `json:"summary,omitempty"`
 }
 
 // New creates an Exporter with mTLS client if cert files are configured.
@@ -94,15 +125,15 @@ func (e *Exporter) collectFiles() ([]string, error) {
 	return files, err
 }
 
-// PushFile sends a single result file to the API.
+// PushFile trims a single Vuls result file down to the fields the API needs and
+// POSTs the slim payload.
 func (e *Exporter) PushFile(path string) error {
-	f, err := os.Open(path)
+	body, err := trimResultFile(path)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", path, err)
+		return err
 	}
-	defer f.Close()
 
-	req, err := http.NewRequest(http.MethodPost, e.apiURL, f)
+	req, err := http.NewRequest(http.MethodPost, e.apiURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
@@ -120,6 +151,29 @@ func (e *Exporter) PushFile(path string) error {
 	}
 
 	return nil
+}
+
+// trimResultFile decodes a Vuls result file into slimResult (streaming, so the
+// full file is never held in memory as one blob) and re-marshals it, yielding a
+// payload containing only the fields the API consumes.
+func trimResultFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+
+	var result slimResult
+	if err := json.NewDecoder(f).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding %s: %w", path, err)
+	}
+
+	body, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling trimmed result for %s: %w", path, err)
+	}
+
+	return body, nil
 }
 
 func buildTLSConfig(obmondo config.Obmondo) (*tls.Config, error) {
