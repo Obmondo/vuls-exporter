@@ -30,35 +30,6 @@ type Exporter struct {
 	client     *http.Client
 }
 
-// slimResult is the subset of a Vuls scan result the Obmondo API actually
-// consumes. A full Vuls result JSON also carries references, CPEs, CWEs, CVSS2
-// data, exploits, mitigations and the host's package inventory — megabytes the
-// API ignores. Decoding into this struct drops all of it (unknown JSON fields
-// are skipped), so we push a fraction of the original payload.
-type slimResult struct {
-	ServerName  string             `json:"serverName"`
-	Family      string             `json:"family,omitempty"`
-	ScannedCves map[string]slimCVE `json:"scannedCves,omitempty"`
-}
-
-type slimCVE struct {
-	// The CVE ID is the map key in scannedCves, so it is not repeated here.
-	AffectedPackages []slimAffectedPackage       `json:"affectedPackages,omitempty"`
-	CveContents      map[string][]slimCveContent `json:"cveContents,omitempty"`
-}
-
-type slimAffectedPackage struct {
-	Name        string `json:"name"`
-	NotFixedYet bool   `json:"notFixedYet,omitempty"`
-	FixState    string `json:"fixState,omitempty"`
-}
-
-type slimCveContent struct {
-	Cvss3Score    float64 `json:"cvss3Score,omitempty"`
-	Cvss3Severity string  `json:"cvss3Severity,omitempty"`
-	Summary       string  `json:"summary,omitempty"`
-}
-
 // New creates an Exporter with mTLS client if cert files are configured.
 func New(cfg *config.Config) (*Exporter, error) {
 	client := &http.Client{Timeout: cfg.Obmondo.Timeout.Duration}
@@ -153,9 +124,9 @@ func (e *Exporter) PushFile(path string) error {
 	return nil
 }
 
-// trimResultFile decodes a Vuls result file into slimResult (streaming, so the
-// full file is never held in memory as one blob) and re-marshals it, yielding a
-// payload containing only the fields the API consumes.
+// trimResultFile decodes a Vuls result file (streaming, so the full file is
+// never held in memory as one blob) and resolves it into the compact,
+// distro-aware payload the API stores directly.
 func trimResultFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -163,77 +134,17 @@ func trimResultFile(path string) ([]byte, error) {
 	}
 	defer f.Close()
 
-	var result slimResult
+	var result vulsResult
 	if err := json.NewDecoder(f).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding %s: %w", path, err)
 	}
 
-	filterByDistro(&result)
-
-	body, err := json.Marshal(result)
+	body, err := json.Marshal(buildReport(&result))
 	if err != nil {
-		return nil, fmt.Errorf("marshaling trimmed result for %s: %w", path, err)
+		return nil, fmt.Errorf("marshaling report for %s: %w", path, err)
 	}
 
 	return body, nil
-}
-
-// distroSources returns the CVE content sources that count as the host distro's
-// own advisory for a Vuls family (security-API feed, then OVAL feed). Substring
-// matching tolerates Vuls's dotted family names. Returns nil for unknown
-// families, which disables distro filtering.
-func distroSources(family string) []string {
-	f := strings.ToLower(family)
-	switch {
-	case strings.Contains(f, "ubuntu"):
-		return []string{"ubuntu_api", "ubuntu"}
-	case strings.Contains(f, "debian"):
-		return []string{"debian_security_tracker", "debian"}
-	case strings.Contains(f, "redhat"), strings.Contains(f, "centos"),
-		strings.Contains(f, "rocky"), strings.Contains(f, "alma"),
-		strings.Contains(f, "oracle"), strings.Contains(f, "fedora"),
-		strings.Contains(f, "amazon"):
-		return []string{"redhat_api", "redhat"}
-	case strings.Contains(f, "suse"):
-		return []string{"suse"}
-	}
-	return nil
-}
-
-// filterByDistro drops CVEs the host distro's own advisory never flagged (Vuls
-// cross-references other vendors for the same CVE ID) and prunes each surviving
-// CVE's content to the distro's own sources plus nvd — nvd is kept because it
-// carries the CVSS score when the distro feed publishes only a severity. Hosts
-// with an unknown family are left untouched.
-func filterByDistro(r *slimResult) {
-	sources := distroSources(r.Family)
-	if sources == nil {
-		return
-	}
-
-	allowed := map[string]bool{"nvd": true}
-	for _, s := range sources {
-		allowed[s] = true
-	}
-
-	for id, cve := range r.ScannedCves {
-		fromDistro := false
-		for _, s := range sources {
-			if len(cve.CveContents[s]) > 0 {
-				fromDistro = true
-				break
-			}
-		}
-		if !fromDistro {
-			delete(r.ScannedCves, id)
-			continue
-		}
-		for src := range cve.CveContents {
-			if !allowed[src] {
-				delete(cve.CveContents, src)
-			}
-		}
-	}
 }
 
 func buildTLSConfig(obmondo config.Obmondo) (*tls.Config, error) {

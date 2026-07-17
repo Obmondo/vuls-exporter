@@ -56,11 +56,10 @@ func TestPush_SendsFiles(t *testing.T) {
 	}
 }
 
-// TestPush_TrimsPayload verifies the exporter strips the bulky Vuls fields
-// (references, CPEs, CWEs, CVSS2, package inventory) and pushes only what the
-// API reads: serverName, and per-CVE the ID, affected packages, and the CVSS3
-// score/severity/summary of each content source.
-func TestPush_TrimsPayload(t *testing.T) {
+// TestPush_ResolvesPayload verifies the exporter resolves each CVE to a
+// distro-aware score/severity/link and pushes only that — no raw cveContents,
+// no bulky Vuls fields — dropping CVEs the host distro never flagged.
+func TestPush_ResolvesPayload(t *testing.T) {
 	var received string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -111,49 +110,39 @@ func TestPush_TrimsPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Bulky and redundant fields must be gone. cveID is dropped because it is
-	// already the scannedCves map key; redhat_api because it is not ubuntu's own
-	// advisory; CVE-2099-9999 because ubuntu never flagged it.
-	for _, gone := range []string{"references", "cpes", "cwes", "cvss2Score", "\"packages\"", "confidences", "drop me", "cveID", "redhat_api", "CVE-2099-9999"} {
+	// Raw vendor data and bulky fields must be gone; the payload is resolved.
+	// CVE-2099-9999 is dropped because ubuntu never flagged it; family is no
+	// longer sent (the exporter already resolved it).
+	for _, gone := range []string{"cveContents", "references", "cpes", "cwes", "cvss2Score", "\"packages\"", "confidences", "drop me", "cveID", "redhat_api", "ubuntu_api", "nvd", "CVE-2099-9999", "family"} {
 		if strings.Contains(received, gone) {
-			t.Errorf("trimmed payload still contains %q: %s", gone, received)
+			t.Errorf("resolved payload still contains %q: %s", gone, received)
 		}
 	}
 
-	// The relevant CVE is still addressable by its map key, with its own feed and
-	// nvd preserved.
-	if !strings.Contains(received, "CVE-2016-2568") {
-		t.Errorf("trimmed payload lost the CVE map key: %s", received)
-	}
-	for _, want := range []string{"ubuntu_api", "nvd"} {
-		if !strings.Contains(received, want) {
-			t.Errorf("trimmed payload dropped needed source %q: %s", want, received)
-		}
-	}
-
-	// Required fields must survive and round-trip to the API's shape.
-	var got slimResult
+	var got reportResult
 	if err := json.Unmarshal([]byte(received), &got); err != nil {
-		t.Fatalf("unmarshal trimmed payload: %v", err)
+		t.Fatalf("unmarshal resolved payload: %v", err)
 	}
 	if got.ServerName != "host1" {
 		t.Errorf("serverName = %q, want host1", got.ServerName)
 	}
-	if got.Family != "ubuntu" {
-		t.Errorf("family = %q, want ubuntu (needed for the API's distro logic)", got.Family)
-	}
 	cve, ok := got.ScannedCves["CVE-2016-2568"]
 	if !ok {
-		t.Fatalf("CVE missing from trimmed payload: %s", received)
+		t.Fatalf("CVE missing from resolved payload: %s", received)
+	}
+	// Ubuntu's "low" wins the severity; the score falls back to NVD (ubuntu_api
+	// has none); the link points at Ubuntu's advisory.
+	if cve.Severity != "low" {
+		t.Errorf("severity = %q, want low", cve.Severity)
+	}
+	if cve.Score != 7.8 {
+		t.Errorf("score = %v, want 7.8", cve.Score)
+	}
+	if cve.Link != "https://ubuntu.com/security/CVE-2016-2568" {
+		t.Errorf("link = %q, want ubuntu advisory", cve.Link)
 	}
 	if len(cve.AffectedPackages) != 1 || cve.AffectedPackages[0].Name != "util-linux" {
 		t.Errorf("affected packages not preserved: %+v", cve.AffectedPackages)
-	}
-	if s := cve.CveContents["nvd"][0].Cvss3Score; s != 7.8 {
-		t.Errorf("nvd cvss3Score = %v, want 7.8", s)
-	}
-	if sev := cve.CveContents["ubuntu_api"][0].Cvss3Severity; sev != "low" {
-		t.Errorf("ubuntu_api severity = %q, want low", sev)
 	}
 }
 
