@@ -1,6 +1,9 @@
 package exporter
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // vulsResult is the subset of a Vuls scan result we read in order to resolve
 // each CVE. A full Vuls result also carries references, CPEs, CWEs, CVSS2 data,
@@ -9,6 +12,7 @@ import "strings"
 type vulsResult struct {
 	ServerName  string             `json:"serverName"`
 	Family      string             `json:"family"`
+	ScannedAt   time.Time          `json:"scannedAt"`
 	ScannedCves map[string]vulsCVE `json:"scannedCves"`
 }
 
@@ -32,8 +36,13 @@ type vulsCveContent struct {
 // reportResult is the resolved payload posted to the API. Every distro-aware
 // choice (which advisory wins the severity, score and link) is already made, so
 // the API stores these values verbatim.
+//
+// scannedAt is forwarded because every push cycle re-sends the whole results
+// directory: without the scan time the API cannot order reports, and a re-pushed
+// old result is indistinguishable from a fresh scan.
 type reportResult struct {
 	ServerName  string               `json:"serverName"`
+	ScannedAt   time.Time            `json:"scannedAt,omitzero"`
 	ScannedCves map[string]reportCVE `json:"scannedCves,omitempty"`
 }
 
@@ -139,6 +148,7 @@ func buildReport(r *vulsResult) reportResult {
 
 	out := reportResult{
 		ServerName:  r.ServerName,
+		ScannedAt:   r.ScannedAt,
 		ScannedCves: make(map[string]reportCVE, len(r.ScannedCves)),
 	}
 	for id, cve := range r.ScannedCves {
