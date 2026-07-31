@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Obmondo/vuls-exporter/config"
 )
@@ -143,6 +144,92 @@ func TestPush_ResolvesPayload(t *testing.T) {
 	}
 	if len(cve.AffectedPackages) != 1 || cve.AffectedPackages[0].Name != "util-linux" {
 		t.Errorf("affected packages not preserved: %+v", cve.AffectedPackages)
+	}
+}
+
+// TestPush_ForwardsScannedAt pins the scan time to the payload. Every cycle
+// re-pushes the whole results directory, so without it the API cannot tell a
+// re-pushed old result from a fresh scan.
+func TestPush_ForwardsScannedAt(t *testing.T) {
+	var received string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	raw := `{
+		"serverName": "host1",
+		"family": "ubuntu",
+		"scannedAt": "2026-07-31T08:00:00Z",
+		"reportedAt": "2026-07-31T08:28:49.07581855Z",
+		"scannedCves": {
+			"CVE-2016-2568": {
+				"affectedPackages": [{"name": "util-linux", "notFixedYet": false, "fixState": "fixed"}],
+				"cveContents": {"ubuntu_api": [{"cvss3Score": 5.5, "cvss3Severity": "medium"}]}
+			}
+		}
+	}`
+
+	dir := t.TempDir()
+	hostDir := filepath.Join(dir, "host1")
+	if err := os.MkdirAll(hostDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(hostDir, "result.json"), raw)
+
+	exp, err := New(&config.Config{ResultsDir: dir, Obmondo: config.Obmondo{URL: srv.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exp.Push(); err != nil {
+		t.Fatal(err)
+	}
+
+	// reportedAt is the exporter's own write time and stays out of the payload.
+	if strings.Contains(received, "reportedAt") {
+		t.Errorf("payload should not carry reportedAt: %s", received)
+	}
+
+	var got reportResult
+	if err := json.Unmarshal([]byte(received), &got); err != nil {
+		t.Fatalf("unmarshal resolved payload: %v", err)
+	}
+	want := time.Date(2026, 7, 31, 8, 0, 0, 0, time.UTC)
+	if !got.ScannedAt.Equal(want) {
+		t.Errorf("scannedAt = %s, want %s", got.ScannedAt, want)
+	}
+}
+
+// TestPush_OmitsMissingScannedAt keeps the payload unchanged for results
+// written before Vuls recorded a scan time, so the API can fall back.
+func TestPush_OmitsMissingScannedAt(t *testing.T) {
+	var received string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	hostDir := filepath.Join(dir, "host1")
+	if err := os.MkdirAll(hostDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(hostDir, "result.json"), `{"serverName":"host1","family":"ubuntu"}`)
+
+	exp, err := New(&config.Config{ResultsDir: dir, Obmondo: config.Obmondo{URL: srv.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exp.Push(); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(received, "scannedAt") {
+		t.Errorf("zero scan time should be omitted: %s", received)
 	}
 }
 
